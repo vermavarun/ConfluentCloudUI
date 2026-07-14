@@ -4,8 +4,9 @@ SSO via `confluent login --save` (opens browser). No API keys needed.
 All data fetched through the Confluent CLI.
 """
 
+import csv
 import customtkinter as ctk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 from PIL import Image, ImageTk
 import subprocess
 import threading
@@ -341,6 +342,7 @@ class MainFrame(ctk.CTkFrame):
         self.cluster_id = None
         self._env_map = {}
         self._cluster_map = {}
+        self._pools_all_rows = []
 
         self._build_sidebar()
         self._build_content()
@@ -591,6 +593,30 @@ class MainFrame(ctk.CTkFrame):
         )
         self.pools_status.pack(side="left", padx=12)
 
+        ctk.CTkButton(
+            top, text="⬇ Download CSV", width=130, height=36,
+            fg_color="#45475a", hover_color="#585b70",
+            command=self._download_pools,
+        ).pack(side="right")
+
+        # Filter bar
+        filter_row = ctk.CTkFrame(t, fg_color="transparent")
+        filter_row.pack(fill="x", pady=(0, 6))
+        ctk.CTkLabel(filter_row, text="Filter:",
+                     font=ctk.CTkFont(size=13)).pack(side="left", padx=(0, 8))
+        self.pools_filter_var = ctk.StringVar()
+        self.pools_filter_var.trace_add("write", lambda *_: self._apply_pools_filter())
+        ctk.CTkEntry(
+            filter_row, textvariable=self.pools_filter_var,
+            placeholder_text="Search by Pool ID, Name, Description…",
+            width=420, height=34,
+        ).pack(side="left")
+        ctk.CTkButton(
+            filter_row, text="✕", width=34, height=34,
+            fg_color="#313244", hover_color="#45475a",
+            command=lambda: self.pools_filter_var.set(""),
+        ).pack(side="left", padx=(4, 0))
+
         self.pools_table = DataTable(
             t,
             columns=["Pool ID", "Display Name", "Description", "Principal Claim", "Filter"],
@@ -622,18 +648,63 @@ class MainFrame(ctk.CTkFrame):
         if not items:
             self.pools_status.configure(text="No pools found.", text_color="#6c7086")
             return
-        rows = [
+        self._pools_all_rows = [
             {
-                "Pool ID":       d.get("id", ""),
-                "Display Name":  d.get("display_name", ""),
-                "Description":   d.get("description", ""),
+                "Pool ID":        d.get("id", ""),
+                "Display Name":   d.get("display_name", ""),
+                "Description":    d.get("description", ""),
                 "Principal Claim":d.get("principal_claim", ""),
-                "Filter":        d.get("filter", ""),
+                "Filter":         d.get("filter", ""),
             }
             for d in items
         ]
+        self.pools_filter_var.set("")  # reset filter on fresh load
+        self._apply_pools_filter()
+
+    def _apply_pools_filter(self):
+        rows = getattr(self, "_pools_all_rows", [])
+        q = self.pools_filter_var.get().strip().lower()
+        if q:
+            rows = [
+                r for r in rows
+                if any(q in str(v).lower() for v in r.values())
+            ]
         self.pools_table.load(rows)
-        self.pools_status.configure(text=f"{len(rows)} pools", text_color="#a6e3a1")
+        total = len(getattr(self, "_pools_all_rows", []))
+        shown = len(rows)
+        if q:
+            self.pools_status.configure(
+                text=f"{shown} of {total} pools", text_color="#a6e3a1"
+            )
+        else:
+            self.pools_status.configure(
+                text=f"{total} pools", text_color="#a6e3a1"
+            )
+
+    def _download_pools(self):
+        rows = getattr(self, "_pools_all_rows", [])
+        # Use filtered rows if a filter is active
+        q = self.pools_filter_var.get().strip().lower()
+        if q:
+            rows = [r for r in rows if any(q in str(v).lower() for v in r.values())]
+        if not rows:
+            messagebox.showinfo("No data", "Load pools first.")
+            return
+        path = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+            initialfile="identity_pools.csv",
+        )
+        if not path:
+            return
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(rows)
+        self.pools_status.configure(
+            text=f"Saved {len(rows)} rows → {os.path.basename(path)}",
+            text_color="#a6e3a1",
+        )
 
     def _acls_for_selected_pool(self):
         vals = self.pools_table.selected_values()
