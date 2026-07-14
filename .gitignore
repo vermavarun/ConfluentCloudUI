@@ -2,3 +2,4 @@ dist
 build
 icon.iconset
 Confluent ACL Manager.spec
+.DS_Store

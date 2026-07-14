@@ -28,9 +28,13 @@ ctk.set_default_color_theme("blue")
 # ─── CLI helpers ──────────────────────────────────────────────────────────────
 
 def _cli_env():
-    """Return os.environ with Homebrew bin prepended to PATH."""
+    """Return os.environ with Homebrew bin prepended to PATH.
+    Guarantees HOME is set — critical when launched as a packaged .app bundle.
+    """
     env = os.environ.copy()
     env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + env.get("PATH", "")
+    if not env.get("HOME"):
+        env["HOME"] = os.path.expanduser("~")
     return env
 
 
@@ -127,8 +131,16 @@ def sso_login_async(email: str, status_cb, done_cb):
                     break
 
             child.wait()
-            ok = child.exitstatus == 0
-            done_cb(ok, None if ok else "Login failed. Please try again.")
+
+            # Verify login by querying the active context — more reliable than
+            # pexpect's exitstatus (which can be None inside a PyInstaller bundle).
+            status_cb("Verifying login…")
+            verify = subprocess.run(
+                ["confluent", "context", "current"],
+                capture_output=True, text=True, env=_cli_env(),
+            )
+            ok = verify.returncode == 0
+            done_cb(ok, None if ok else "Login verification failed. Please try again.")
 
         except FileNotFoundError:
             done_cb(
@@ -780,10 +792,6 @@ class MainFrame(ctk.CTkFrame):
 
     def _on_env_change(self, name):
         self.env_id = self._env_map.get(name)
-        if self.env_id:
-            subprocess.run(
-                ["confluent", "environment", "use", self.env_id], capture_output=True
-            )
         self._load_clusters()
 
     def _load_clusters(self):
@@ -792,6 +800,12 @@ class MainFrame(ctk.CTkFrame):
         self.cluster_id = None
 
         def _run():
+            # Switch environment first (must complete before listing clusters)
+            if self.env_id:
+                subprocess.run(
+                    ["confluent", "environment", "use", self.env_id],
+                    capture_output=True, env=_cli_env(),
+                )
             data, err = run_confluent("kafka", "cluster", "list")
             self.after(0, lambda: self._populate_clusters(data, err))
 
@@ -817,17 +831,19 @@ class MainFrame(ctk.CTkFrame):
     def _on_cluster_change(self, name):
         self.cluster_id = self._cluster_map.get(name)
         if self.cluster_id:
-            subprocess.run(
-                ["confluent", "kafka", "cluster", "use", self.cluster_id],
-                capture_output=True,
-            )
+            def _use():
+                subprocess.run(
+                    ["confluent", "kafka", "cluster", "use", self.cluster_id],
+                    capture_output=True, env=_cli_env(),
+                )
+            threading.Thread(target=_use, daemon=True).start()
             self.ctx_lbl.configure(
                 text=f"env: {self.env_id}\ncluster: {self.cluster_id}"
             )
 
     def _logout(self):
         if messagebox.askyesno("Logout", "Logout from Confluent Cloud?"):
-            subprocess.run(["confluent", "logout"], capture_output=True)
+            subprocess.run(["confluent", "logout"], capture_output=True, env=_cli_env())
             self.master.show_login()
 
 
