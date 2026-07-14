@@ -342,7 +342,10 @@ class MainFrame(ctk.CTkFrame):
         self.cluster_id = None
         self._env_map = {}
         self._cluster_map = {}
+        self._acl_all_rows = []
         self._pools_all_rows = []
+        self._bindings_all_rows = []
+        self._accounts_all_rows = []
 
         self._build_sidebar()
         self._build_content()
@@ -447,6 +450,30 @@ class MainFrame(ctk.CTkFrame):
         content = ctk.CTkFrame(self, fg_color="transparent")
         content.pack(side="right", fill="both", expand=True, padx=16, pady=16)
 
+        # ── Common filter bar + download ───────────────────────────────────
+        filter_bar = ctk.CTkFrame(content, fg_color="transparent")
+        filter_bar.pack(fill="x", pady=(0, 8))
+        ctk.CTkLabel(
+            filter_bar, text="🔍  Filter:", font=ctk.CTkFont(size=13)
+        ).pack(side="left", padx=(0, 8))
+        self.common_filter_var = ctk.StringVar()
+        self.common_filter_var.trace_add("write", lambda *_: self._apply_common_filter())
+        ctk.CTkEntry(
+            filter_bar, textvariable=self.common_filter_var,
+            placeholder_text="Search across current tab…",
+            width=380, height=34,
+        ).pack(side="left", padx=(0, 4))
+        ctk.CTkButton(
+            filter_bar, text="✕", width=34, height=34,
+            fg_color="#313244", hover_color="#45475a",
+            command=lambda: self.common_filter_var.set(""),
+        ).pack(side="left")
+        ctk.CTkButton(
+            filter_bar, text="⬇ Download CSV", width=130, height=34,
+            fg_color="#45475a", hover_color="#585b70",
+            command=self._download_current_tab,
+        ).pack(side="right")
+
         self.tabs = ctk.CTkTabview(content, corner_radius=10, fg_color="#1e1e2e")
         self.tabs.pack(fill="both", expand=True)
 
@@ -539,7 +566,7 @@ class MainFrame(ctk.CTkFrame):
         if not items:
             self.acl_status.configure(text="No ACL entries found.", text_color="#6c7086")
             return
-        rows = [
+        self._acl_all_rows = [
             {
                 "Principal":    d.get("principal", ""),
                 "Resource Type":d.get("resource_type", ""),
@@ -551,13 +578,7 @@ class MainFrame(ctk.CTkFrame):
             }
             for d in items
         ]
-        self.acl_table.load(rows)
-        allow = sum(1 for r in rows if r["Permission"] == "ALLOW")
-        deny  = sum(1 for r in rows if r["Permission"] == "DENY")
-        self.acl_status.configure(
-            text=f"{len(rows)} entries  ·  {allow} ALLOW  ·  {deny} DENY",
-            text_color="#a6e3a1",
-        )
+        self._apply_common_filter()
 
     # ── Tab 2 ── Identity Pools ────────────────────────────────────────────────
 
@@ -592,30 +613,6 @@ class MainFrame(ctk.CTkFrame):
             top, text="", font=ctk.CTkFont(size=11), text_color="#6c7086"
         )
         self.pools_status.pack(side="left", padx=12)
-
-        ctk.CTkButton(
-            top, text="⬇ Download CSV", width=130, height=36,
-            fg_color="#45475a", hover_color="#585b70",
-            command=self._download_pools,
-        ).pack(side="right")
-
-        # Filter bar
-        filter_row = ctk.CTkFrame(t, fg_color="transparent")
-        filter_row.pack(fill="x", pady=(0, 6))
-        ctk.CTkLabel(filter_row, text="Filter:",
-                     font=ctk.CTkFont(size=13)).pack(side="left", padx=(0, 8))
-        self.pools_filter_var = ctk.StringVar()
-        self.pools_filter_var.trace_add("write", lambda *_: self._apply_pools_filter())
-        ctk.CTkEntry(
-            filter_row, textvariable=self.pools_filter_var,
-            placeholder_text="Search by Pool ID, Name, Description…",
-            width=420, height=34,
-        ).pack(side="left")
-        ctk.CTkButton(
-            filter_row, text="✕", width=34, height=34,
-            fg_color="#313244", hover_color="#45475a",
-            command=lambda: self.pools_filter_var.set(""),
-        ).pack(side="left", padx=(4, 0))
 
         self.pools_table = DataTable(
             t,
@@ -658,42 +655,79 @@ class MainFrame(ctk.CTkFrame):
             }
             for d in items
         ]
-        self.pools_filter_var.set("")  # reset filter on fresh load
-        self._apply_pools_filter()
+        self._apply_common_filter()
 
-    def _apply_pools_filter(self):
-        rows = getattr(self, "_pools_all_rows", [])
-        q = self.pools_filter_var.get().strip().lower()
-        if q:
-            rows = [
-                r for r in rows
-                if any(q in str(v).lower() for v in r.values())
-            ]
-        self.pools_table.load(rows)
-        total = len(getattr(self, "_pools_all_rows", []))
-        shown = len(rows)
-        if q:
-            self.pools_status.configure(
-                text=f"{shown} of {total} pools", text_color="#a6e3a1"
-            )
-        else:
-            self.pools_status.configure(
-                text=f"{total} pools", text_color="#a6e3a1"
+    def _apply_common_filter(self):
+        q = self.common_filter_var.get().strip().lower()
+
+        def _filter(rows):
+            return [
+                r for r in rows if any(q in str(v).lower() for v in r.values())
+            ] if q else rows
+
+        # ACL tab
+        acl_rows = _filter(self._acl_all_rows)
+        self.acl_table.load(acl_rows)
+        if self._acl_all_rows:
+            allow = sum(1 for r in acl_rows if r.get("Permission") == "ALLOW")
+            deny  = sum(1 for r in acl_rows if r.get("Permission") == "DENY")
+            total = len(self._acl_all_rows)
+            suffix = f" of {total}" if q else ""
+            self.acl_status.configure(
+                text=f"{len(acl_rows)}{suffix} entries  ·  {allow} ALLOW  ·  {deny} DENY",
+                text_color="#a6e3a1",
             )
 
-    def _download_pools(self):
-        rows = getattr(self, "_pools_all_rows", [])
-        # Use filtered rows if a filter is active
-        q = self.pools_filter_var.get().strip().lower()
-        if q:
-            rows = [r for r in rows if any(q in str(v).lower() for v in r.values())]
+        # Identity Pools tab
+        pool_rows = _filter(self._pools_all_rows)
+        self.pools_table.load(pool_rows)
+        if self._pools_all_rows:
+            total = len(self._pools_all_rows)
+            suffix = f" of {total}" if q else ""
+            self.pools_status.configure(
+                text=f"{len(pool_rows)}{suffix} pools", text_color="#a6e3a1"
+            )
+
+        # Role Bindings tab
+        binding_rows = _filter(self._bindings_all_rows)
+        self.rb_table.load(binding_rows)
+        if self._bindings_all_rows:
+            total = len(self._bindings_all_rows)
+            suffix = f" of {total}" if q else ""
+            self.rb_status.configure(
+                text=f"{len(binding_rows)}{suffix} role bindings", text_color="#a6e3a1"
+            )
+
+        # Service Accounts tab
+        account_rows = _filter(self._accounts_all_rows)
+        self.sa_table.load(account_rows)
+        if self._accounts_all_rows:
+            total = len(self._accounts_all_rows)
+            suffix = f" of {total}" if q else ""
+            self.sa_status.configure(
+                text=f"{len(account_rows)}{suffix} accounts", text_color="#a6e3a1"
+            )
+
+    def _download_current_tab(self):
+        q = self.common_filter_var.get().strip().lower()
+        tab = self.tabs.get()
+        tab_config = {
+            "🔑  ACL Permissions":  (self._acl_all_rows,      "acl_permissions.csv"),
+            "👥  Identity Pools":   (self._pools_all_rows,    "identity_pools.csv"),
+            "📋  Role Bindings":    (self._bindings_all_rows, "role_bindings.csv"),
+            "🤖  Service Accounts": (self._accounts_all_rows, "service_accounts.csv"),
+        }
+        all_rows, default_name = tab_config.get(tab, ([], "export.csv"))
+        rows = [
+            r for r in all_rows if any(q in str(v).lower() for v in r.values())
+        ] if q else all_rows
         if not rows:
-            messagebox.showinfo("No data", "Load pools first.")
+            messagebox.showinfo("No data", "Load data in this tab first.")
             return
         path = filedialog.asksaveasfilename(
             defaultextension=".csv",
             filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
-            initialfile="identity_pools.csv",
+            initialfile=default_name,
         )
         if not path:
             return
@@ -701,10 +735,7 @@ class MainFrame(ctk.CTkFrame):
             writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
             writer.writeheader()
             writer.writerows(rows)
-        self.pools_status.configure(
-            text=f"Saved {len(rows)} rows → {os.path.basename(path)}",
-            text_color="#a6e3a1",
-        )
+        messagebox.showinfo("Saved", f"Exported {len(rows)} rows\n{os.path.basename(path)}")
 
     def _acls_for_selected_pool(self):
         vals = self.pools_table.selected_values()
@@ -783,10 +814,8 @@ class MainFrame(ctk.CTkFrame):
             }
             for d in items
         ]
-        self.rb_table.load(rows)
-        self.rb_status.configure(
-            text=f"{len(rows)} role bindings", text_color="#a6e3a1"
-        )
+        self._bindings_all_rows = rows
+        self._apply_common_filter()
 
     # ── Tab 4 ── Service Accounts ──────────────────────────────────────────────
 
@@ -835,8 +864,8 @@ class MainFrame(ctk.CTkFrame):
             }
             for d in items
         ]
-        self.sa_table.load(rows)
-        self.sa_status.configure(text=f"{len(rows)} accounts", text_color="#a6e3a1")
+        self._accounts_all_rows = rows
+        self._apply_common_filter()
 
     # ── Environment / cluster loading ──────────────────────────────────────────
 
